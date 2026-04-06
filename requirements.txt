@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+sqlalchemy
+alembic
+psycopg2-binary
+pydantic
+pydantic-settings
+python-multipart
+anthropic
+pdfplumber
+openpyxl
+pgvector
+python-dotenv
