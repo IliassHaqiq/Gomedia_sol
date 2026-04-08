@@ -3,6 +3,7 @@ import json
 import requests
 import re
 import os
+from typing import Any, Dict
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,46 +14,159 @@ load_dotenv()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3:latest")
 
+import json
+import os
+import re
+from typing import Any, Dict
+
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3:latest")
 
 
-
-def _extract_json(raw_text: str) -> dict:
-    """
-    Essaie d'extraire un JSON valide depuis la réponse du modèle.
-    """
+def _extract_json(raw_text: str) -> Dict[str, Any]:
     raw_text = raw_text.strip()
 
-    # Cas simple : la réponse entière est déjà un JSON
     try:
         return json.loads(raw_text)
     except json.JSONDecodeError:
         pass
 
-    # Cas fréquent : le modèle ajoute du texte autour du JSON
     match = re.search(r"\{.*\}", raw_text, re.DOTALL)
     if match:
         candidate = match.group(0)
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            pass
+        return json.loads(candidate)
 
-    raise ValueError("JSON introuvable ou invalide dans la réponse du modèle")
+    raise ValueError(f"JSON introuvable dans la réponse du modèle: {raw_text[:500]}")
 
 
-def generate_spec(text: str, filename: str) -> dict:
+def _post_to_ollama(prompt: str) -> str:
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+    }
+
+    response = requests.post(
+        OLLAMA_URL,
+        json=payload,
+        timeout=180,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Ollama a renvoyé {response.status_code}: {response.text}")
+
+    data = response.json()
+    raw = data.get("response", "")
+    if not raw:
+        raise RuntimeError(f"Réponse vide d'Ollama: {data}")
+
+    return raw
+
+
+def _normalize_spec_keys(specs: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = {}
+
+    key_map = {
+        "tension nominale bobine": "Tension nominale bobine",
+        "courant bobine nominal": "Courant bobine nominal",
+        "puissance bobine": "Puissance bobine",
+        "résistance bobine": "Résistance bobine",
+        "resistance bobine": "Résistance bobine",
+        "tension d'enclenchement (min)": "Tension d'enclenchement (min)",
+        "tension de déclenchement (max)": "Tension de déclenchement (max)",
+        "nombre de contacts": "Nombre de contacts",
+        "type de contact": "Type de contact",
+        "courant nominal contact": "Courant nominal contact",
+        "tension max contact (ac)": "Tension max contact (AC)",
+        "tension max contact (dc)": "Tension max contact (DC)",
+        "puissance de coupure max": "Puissance de coupure max",
+    }
+
+    for key, value in specs.items():
+        clean_key = str(key).strip()
+        mapped = key_map.get(clean_key.lower(), clean_key)
+        normalized[mapped] = value
+
+    return normalized
+
+
+def _ensure_required_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    required_fields = [
+        "numero_de_piece",
+        "designation",
+        "description_fr",
+        "description_en",
+        "fabricant",
+    ]
+
+    for field in required_fields:
+        value = data.get(field)
+        if value is None or str(value).strip() == "":
+            data[field] = "N/A"
+
+    specs = data.get("specifications")
+    if not isinstance(specs, dict):
+        data["specifications"] = {}
+    else:
+        data["specifications"] = _normalize_spec_keys(specs)
+
+    return data
+
+
+def _translate_to_english_if_missing(data: Dict[str, Any]) -> Dict[str, Any]:
+    description_en = str(data.get("description_en", "")).strip()
+
+    if description_en and description_en != "N/A":
+        return data
+
+    description_fr = str(data.get("description_fr", "")).strip()
+    designation = str(data.get("designation", "")).strip()
+    fabricant = str(data.get("fabricant", "")).strip()
+
+    fallback_prompt = f"""
+You are a technical translator.
+
+Translate the following product description into professional English.
+Return STRICTLY valid JSON and nothing else.
+
+Expected format:
+{{
+  "description_en": "..."
+}}
+
+French description: {description_fr}
+Designation: {designation}
+Manufacturer: {fabricant}
+""".strip()
+
+    raw = _post_to_ollama(fallback_prompt)
+    translated = _extract_json(raw)
+
+    desc = str(translated.get("description_en", "")).strip()
+    data["description_en"] = desc if desc else "N/A"
+    return data
+
+
+def generate_spec(text: str, filename: str) -> Dict[str, Any]:
     prompt = f"""
-Tu es un expert en fiches techniques de produits électroniques et industriels.
+Tu es un expert en fiches techniques industrielles et électroniques.
 
-Voici le contenu d'une fiche technique (fichier: {filename}).
+Analyse le contenu suivant provenant du fichier "{filename}".
 
-Ta tâche :
-- Extraire les informations demandées
-- Répondre STRICTEMENT en JSON valide
-- Ne rien ajouter avant ou après le JSON
-- Si une information est introuvable, mettre "N/A"
+Ta mission:
+1. Extraire les informations importantes.
+2. Générer une description claire en français.
+3. Générer une description claire en anglais.
+4. Retourner STRICTEMENT un JSON valide.
+5. Ne rien écrire avant ou après le JSON.
+6. Si une information est introuvable, mettre "N/A".
 
-Format attendu :
+Le JSON doit respecter EXACTEMENT cette structure :
 {{
   "numero_de_piece": "...",
   "designation": "...",
@@ -60,39 +174,29 @@ Format attendu :
   "description_en": "...",
   "fabricant": "...",
   "specifications": {{
-    "spec1": "valeur1",
-    "spec2": "valeur2"
+    "Nom caractéristique 1": "Valeur 1",
+    "Nom caractéristique 2": "Valeur 2"
   }}
 }}
 
-Contenu de la fiche :
+Règles importantes:
+- "description_en" est obligatoire.
+- "specifications" doit toujours être un objet JSON.
+- Uniformiser les unités quand possible: V, VAC, VDC, A, mA, W, kW, Hz.
+- Utiliser des noms de clés propres et lisibles dans "specifications".
+- Répondre uniquement avec du JSON valide.
+
+Contenu:
 {text}
 """.strip()
 
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False
-            },
-            timeout=120
-        )
+    raw = _post_to_ollama(prompt)
+    data = _extract_json(raw)
+    data = _ensure_required_fields(data)
+    data = _translate_to_english_if_missing(data)
 
-        response.raise_for_status()
-        data = response.json()
+    return data
 
-        raw = data.get("response", "")
-        if not raw:
-            raise RuntimeError("Réponse vide retournée par Ollama")
-
-        return _extract_json(raw)
-
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Erreur de connexion à Ollama: {e}")
-    except Exception as e:
-        raise RuntimeError(f"Erreur LLM: {e}")
 
 #"client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
