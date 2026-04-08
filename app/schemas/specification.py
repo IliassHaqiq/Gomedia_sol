@@ -1,15 +1,15 @@
 from pydantic import BaseModel
-from typing import Optional, dict
+from typing import Optional, Any
 
 class SpecificationOut(BaseModel):
     id: int
     document_id: int
-    numero_de_piece: Optional[str]
-    designation: Optional[str]
-    fabricant: Optional[str]
-    description_fr: Optional[str]
-    description_en: Optional[str]
-    structured_data: Optional[dict]
+    numero_de_piece: Optional[str] = None
+    designation: Optional[str] = None
+    fabricant: Optional[str] = None
+    description_fr: Optional[str] = None
+    description_en: Optional[str] = None
+    structured_data: Optional[Any] = None
     validation_status: str
 
     model_config = {"from_attributes": True}

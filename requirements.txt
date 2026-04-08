@@ -11,3 +11,4 @@ pdfplumber
 openpyxl
 pgvector
 python-dotenv
+requests
