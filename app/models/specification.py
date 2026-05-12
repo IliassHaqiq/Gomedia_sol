@@ -14,3 +14,4 @@ class Specification(Base):
     structured_data = Column(JSON)
     validation_status = Column(String, default="pending")
     prompt_version = Column(String, default="v1")
+    description_length = Column(String, default="medium")  # short, medium, long

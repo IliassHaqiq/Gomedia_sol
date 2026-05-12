@@ -1,0 +1,648 @@
+# Modification Log - Database Migration + DeepSeek V4 Pro + pgvector RAG
+
+## Overview
+This document tracks all changes made to transform the project from a document-based system to a product-centric system with vector search capabilities using DeepSeek V4 Pro.
+
+**Date**: 2026-05-08
+**Project**: Gomedia IA Specifications
+**Goal**: Migrate to product-based schema with RAG capabilities
+
+---
+
+## Phase 1: Dependencies Update
+
+### Change 1.1: Update requirements.txt
+**File**: `requirements.txt`
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**Changes Made**:
+- Added `numpy>=1.24.0` for vector operations
+- Added `tenacity>=8.2.0` for retry mechanism
+
+**Reason**: Required for vector operations and robust API calls to DeepSeek.
+
+**Before**:
+```txt
+fastapi
+uvicorn[standard]
+sqlalchemy
+alembic
+psycopg2-binary
+pydantic
+pydantic-settings
+python-multipart
+pdfplumber
+openpyxl
+pgvector
+python-dotenv
+requests
+httpx
+```
+
+**After**:
+```txt
+fastapi
+uvicorn[standard]
+sqlalchemy
+alembic
+psycopg2-binary
+pydantic
+pydantic-settings
+python-multipart
+pdfplumber
+openpyxl
+pgvector
+python-dotenv
+requests
+httpx
+numpy>=1.24.0
+tenacity>=8.2.0
+```
+
+---
+
+## Phase 2: Database Models
+
+### Change 2.1: Create Product Models
+**File**: `app/models/product.py` (NEW FILE)
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**Purpose**: Define new database models for product-centric architecture
+
+**Models Created**:
+1. `Product` - Main product table with reference, brand, designation
+2. `ProductDescription` - French and English descriptions
+3. `ProductFile` - Associated files (PDF, Excel)
+4. `TechnicalSpec` - Technical specifications with attributes, values, units
+5. `ProductEmbedding` - Vector embeddings for RAG search
+
+**Relationships**:
+- Product → ProductDescription (1:1)
+- Product → ProductFile (1:N)
+- Product → TechnicalSpec (1:N)
+- Product → ProductEmbedding (1:N)
+
+**Implementation Details**:
+
+```python
+# Product Model
+class Product(Base):
+    __tablename__ = "products"
+    id = Column(Integer, primary_key=True, index=True)
+    ref_produit = Column(String(100), unique=True, nullable=False, index=True)
+    marque = Column(String(100), index=True)
+    designation = Column(String(255))
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+# ProductDescription Model
+class ProductDescription(Base):
+    __tablename__ = "product_descriptions"
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), unique=True)
+    descriptif_fr = Column(Text)
+    descriptif_en_specs = Column(Text)
+    last_edited_by_human = Column(Boolean, default=False)
+
+# ProductFile Model
+class ProductFile(Base):
+    __tablename__ = "product_files"
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"))
+    file_name = Column(String(255))
+    file_path = Column(Text)
+    file_hash = Column(String(64))
+    created_at = Column(DateTime, default=func.now())
+
+# TechnicalSpec Model
+class TechnicalSpec(Base):
+    __tablename__ = "technical_specs"
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"))
+    attribut = Column(String(1000))
+    valeur = Column(Text)
+    unite = Column(String(50))
+
+# ProductEmbedding Model
+class ProductEmbedding(Base):
+    __tablename__ = "product_embeddings"
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"))
+    embedding = Column(Text)  # JSON string of the vector
+    embedding_type = Column(String(50))  # 'description', 'specs', 'combined'
+    model_name = Column(String(100))  # 'deepseek-v4-pro'
+    created_at = Column(DateTime, default=func.now())
+```
+
+---
+
+## Phase 3: Database Configuration
+
+### Change 3.1: Update Database Connection
+**File**: `app/db/session.py`
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**Purpose**: Update connection string to match pgAdmin settings
+
+**Changes Made**:
+- Updated DATABASE_URL to use localhost:5433
+- Added pool_size=20 and max_overflow=10 for better performance
+- Added default connection string for pgAdmin settings
+
+**Before**:
+```python
+DATABASE_URL = os.getenv("DATABASE_URL")
+engine = create_engine(DATABASE_URL)
+```
+
+**After**:
+```python
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5433/postgres"
+)
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=20,
+    max_overflow=10,
+    echo=False
+)
+```
+
+**Connection Details**:
+- Host: localhost
+- Port: 5433
+- Database: postgres
+- User: postgres
+- Password: (set in .env or default: postgres)
+
+---
+
+## Phase 4: DeepSeek Integration
+
+### Change 4.1: Create DeepSeek Service
+**File**: `app/services/deepseek.py` (NEW FILE)
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**Purpose**: Integrate DeepSeek V4 Pro API for:
+- Text generation and completion
+- Product data extraction from documents
+- Embedding generation for vector search
+
+**Key Methods**:
+- `generate_completion()` - Generate text completions
+- `extract_product_data()` - Extract structured product data
+- `generate_embedding()` - Create vector embeddings
+- `health_check()` - Check service status
+
+**Implementation Details**:
+
+```python
+class DeepSeekService:
+    def __init__(self):
+        self.api_key = os.getenv("DEEPSEEK_API_KEY")
+        self.base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+        self.model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        self.embedding_model = os.getenv("DEEPSEEK_EMBEDDING_MODEL", "deepseek-embedding")
+
+    async def generate_completion(self, messages, temperature=0.7, max_tokens=2000, response_format=None):
+        # Generate text completions with DeepSeek API
+
+    async def extract_product_data(self, text, language="fr"):
+        # Extract structured product data from document text
+        # Returns: ref_produit, marque, designation, descriptif_fr, descriptif_en, technical_specs
+
+    async def generate_embedding(self, text):
+        # Generate vector embedding for semantic search
+        # Returns: List[float] representing the embedding
+```
+
+**Configuration Required**:
+- `DEEPSEEK_API_KEY` - API key from https://platform.deepseek.com/
+- `DEEPSEEK_BASE_URL` - API endpoint (default: https://api.deepseek.com/v1)
+- `DEEPSEEK_MODEL` - Model name (default: deepseek-chat)
+- `DEEPSEEK_EMBEDDING_MODEL` - Embedding model (default: deepseek-embedding)
+
+---
+
+## Phase 5: Vector Search Service
+
+### Change 5.1: Create Vector Search Service
+**File**: `app/services/vector_search.py` (NEW FILE)
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**Purpose**: Implement RAG search using pgvector
+
+**Key Methods**:
+- `create_product_embedding()` - Create and store embeddings
+- `search_similar_products()` - Vector similarity search
+- `get_product_by_ref()` - Lookup by reference
+- `get_product_by_id()` - Lookup by ID
+- `get_all_products()` - List with pagination
+- `get_product_embeddings()` - Get all embeddings for a product
+- `delete_product_embeddings()` - Delete embeddings
+- `rebuild_all_embeddings()` - Rebuild all embeddings
+
+**Implementation Details**:
+
+```python
+class VectorSearchService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    async def create_product_embedding(self, product_id, text, embedding_type="combined"):
+        # Generate embedding using DeepSeek
+        # Store in product_embeddings table
+        # Update search_vector column on products table
+
+    async def search_similar_products(self, query, limit=10, threshold=0.7):
+        # Generate embedding for query
+        # Perform vector search using pgvector
+        # Return results with similarity scores
+```
+
+**Vector Search Query**:
+```sql
+SELECT
+    p.id, p.ref_produit, p.marque, p.designation,
+    pd.descriptif_fr, pd.descriptif_en_specs,
+    1 - (search_vector <=> :query_vector::vector) as similarity
+FROM products p
+LEFT JOIN product_descriptions pd ON p.id = pd.product_id
+WHERE search_vector IS NOT NULL
+ORDER BY search_vector <=> :query_vector::vector
+LIMIT :limit
+```
+
+---
+
+## Phase 6: API Endpoints
+
+### Change 6.1: Create Product API
+**File**: `app/api/products.py` (NEW FILE)
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**Endpoints**:
+- `POST /products/` - Create new product
+- `GET /products/` - List all products (with pagination)
+- `GET /products/{id}` - Get product details by ID
+- `GET /products/ref/{ref_produit}` - Get product details by reference
+- `POST /products/{id}/upload` - Upload file and extract specs
+- `GET /products/search/similar` - Vector similarity search
+- `PUT /products/{id}` - Update product
+- `DELETE /products/{id}` - Delete product
+
+**Pydantic Schemas**:
+- `ProductCreate` - For creating products
+- `ProductUpdate` - For updating products
+- `ProductResponse` - Basic product response
+- `ProductDetailResponse` - Detailed product with descriptions, files, specs
+- `SimilarProductResult` - Similar product with similarity score
+- `SimilarProductsResponse` - Search results wrapper
+
+**Key Features**:
+- File upload with automatic text extraction
+- DeepSeek-powered specification extraction
+- Automatic embedding generation for search
+- File type validation (PDF, Excel)
+- SHA256 hash for file deduplication
+
+---
+
+## Phase 7: Main Application Update
+
+### Change 7.1: Update Main Application
+**File**: `app/main.py`
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**Changes Made**:
+- Imported new product models (Product, ProductDescription, ProductFile, TechnicalSpec, ProductEmbedding)
+- Included products router
+- Enabled pgvector extension on startup
+- Updated health checks (added /health/deepseek, /health/pgvector)
+- Removed Gemini-specific code
+- Updated version to 2.0.0
+
+**Before**:
+```python
+from app.api import documents, specifications
+from app.models import document, specification
+# Gemini configuration
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+```
+
+**After**:
+```python
+from app.api import documents, specifications, products
+from app.models import document, specification
+from app.models.product import Product, ProductDescription, ProductFile, TechnicalSpec, ProductEmbedding
+from app.services.deepseek import deepseek_service
+
+# Enable pgvector extension
+with engine.connect() as conn:
+    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    conn.commit()
+
+# Include products router
+app.include_router(products.router, prefix="/products", tags=["Products"])
+```
+
+**New Health Endpoints**:
+- `GET /health/deepseek` - Check DeepSeek service status
+- `GET /health/pgvector` - Check pgvector extension status
+
+---
+
+## Phase 8: Configuration
+
+### Change 8.1: Update Environment Configuration
+**File**: `.env.example`
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**New Variables Added**:
+- `DEEPSEEK_API_KEY` - DeepSeek API key
+- `DEEPSEEK_BASE_URL` - DeepSeek API endpoint
+- `DEEPSEEK_MODEL` - Model name
+- `DEEPSEEK_EMBEDDING_MODEL` - Embedding model
+- `EMBEDDING_DIMENSION` - Vector dimension
+- `SIMILARITY_THRESHOLD` - Search threshold
+- `MAX_SEARCH_RESULTS` - Max results
+
+**Updated Database Configuration**:
+```env
+# PostgreSQL - Configuration pour pgAdmin
+DATABASE_URL=postgresql://postgres:postgres@localhost:5433/postgres
+```
+
+**DeepSeek Configuration**:
+```env
+# API Key DeepSeek (obtenir sur https://platform.deepseek.com/)
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_EMBEDDING_MODEL=deepseek-embedding
+```
+
+**Vector Search Configuration**:
+```env
+EMBEDDING_DIMENSION=1536
+SIMILARITY_THRESHOLD=0.7
+MAX_SEARCH_RESULTS=10
+```
+
+---
+
+## Phase 9: Migration Script
+
+### Change 9.1: Create Migration Script
+**File**: `migrations/migrate_to_product_schema.py` (NEW FILE)
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**Purpose**: Migrate from document-based to product-based schema
+
+**Steps**:
+1. Drop old tables (documents, specifications)
+2. Create new tables
+3. Enable pgvector extension
+4. Add vector column to products
+5. Create vector index
+
+**Usage**:
+```bash
+# Run migration
+python migrations/migrate_to_product_schema.py
+
+# Rollback migration (WARNING: deletes all data)
+python migrations/migrate_to_product_schema.py --rollback
+```
+
+**Migration Steps**:
+```python
+# Step 1: Drop old tables
+session.execute(text("DROP TABLE IF EXISTS specifications CASCADE"))
+session.execute(text("DROP TABLE IF EXISTS documents CASCADE"))
+
+# Step 2: Create new tables
+Base.metadata.create_all(bind=engine)
+
+# Step 3: Enable pgvector extension
+session.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
+# Step 4: Add vector column
+session.execute(text("""
+    ALTER TABLE products
+    ADD COLUMN search_vector vector(1536)
+"""))
+
+# Step 5: Create vector index
+session.execute(text("""
+    CREATE INDEX idx_products_search_vector
+    ON products USING ivfflat (search_vector vector_cosine_ops)
+    WITH (lists = 100)
+"""))
+```
+
+**Verification**:
+The script verifies:
+- All tables created
+- pgvector extension enabled
+- Vector column exists
+- Vector index created
+
+---
+
+## Phase 10: Description Generation Service
+
+### Change 10.1: Create Description Generator Service
+**File**: `app/services/description_generator.py` (NEW FILE)
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**Purpose**: Generate product descriptions from technical specifications with configurable length
+
+**Key Methods**:
+- `get_technical_specs()` - Get all technical specs for a product
+- `get_product_info()` - Get basic product information
+- `format_technical_specs()` - Format specs for LLM prompt
+- `get_length_instructions()` - Get length-specific instructions
+- `generate_description()` - Generate descriptions using DeepSeek
+- `save_description()` - Save description to database
+- `generate_and_save_description()` - Combined operation
+
+**Description Length Options**:
+- `short` - 2-3 sentences maximum
+- `medium` - 4-6 sentences
+- `long` - 7-10 sentences or more
+
+**Implementation Details**:
+
+```python
+class DescriptionGeneratorService:
+    async def generate_description(self, product_id, length="medium", language="both"):
+        # Get product info and technical specs
+        # Build prompt with length instructions
+        # Generate using DeepSeek
+        # Return French and English descriptions
+```
+
+---
+
+## Phase 11: Product API Extensions
+
+### Change 11.1: Add Description and Specs Endpoints
+**File**: `app/api/products.py`
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**New Endpoints Added**:
+- `POST /products/{id}/specs` - Add a technical specification
+- `GET /products/{id}/specs` - Get all technical specifications
+- `POST /products/{id}/description/generate` - Generate description from specs
+- `PUT /products/{id}/description` - Update description manually
+
+**New Schemas**:
+- `DescriptionGenerateRequest` - Request with length parameter
+- `DescriptionGenerateResponse` - Generated descriptions
+- `TechnicalSpecCreate` - For creating technical specs
+
+---
+
+## Phase 12: Frontend Updates
+
+### Change 12.1: Create Product Manager Component
+**File**: `frontend/src/components/ProductManager.jsx` (NEW FILE)
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**Purpose**: Frontend component for product management and description generation
+
+**Features**:
+- List all products
+- View product details
+- Add technical specifications
+- Generate descriptions (short/medium/long)
+- View French and English descriptions
+- Delete technical specs
+
+**File**: `frontend/src/components/ProductManager.css` (NEW FILE)
+**Status**: ✅ COMPLETED
+
+**Styling**:
+- Two-column layout (product list + details)
+- Responsive design
+- Color-coded description buttons
+- Clean table for technical specs
+
+### Change 12.2: Update Main App Component
+**File**: `frontend/src/App.jsx`
+**Status**: ✅ COMPLETED
+**Date**: 2026-05-08
+
+**Changes Made**:
+- Added "Produits" tab to navigation
+- Imported ProductManager component
+- Updated version to 2.0.0
+
+---
+
+## Execution Checklist
+
+### Pre-Migration
+- [x] Backup existing database
+- [x] Install pgvector extension in PostgreSQL
+- [x] Get DeepSeek API key
+- [x] Update .env file
+
+### Migration
+- [x] Run migration script
+- [x] Verify new tables created
+- [x] Test pgvector extension
+
+### Post-Migration
+- [x] Test product creation
+- [x] Test file upload and extraction
+- [x] Test vector search
+- [x] Create description generator service
+- [x] Add description generation endpoints
+- [x] Create frontend ProductManager component
+- [x] Update frontend navigation
+
+---
+
+## Testing Commands
+
+```bash
+# Install new dependencies
+pip install -r requirements.txt
+
+# Run migration
+python migrations/migrate_to_product_schema.py
+
+# Start server
+uvicorn app.main:app --reload --port 8000
+
+# Test health checks
+curl http://localhost:8000/health
+curl http://localhost:8000/health/db
+curl http://localhost:8000/health/deepseek
+curl http://localhost:8000/health/pgvector
+
+# Test product creation
+curl -X POST http://localhost:8000/products/ \
+  -H "Content-Type: application/json" \
+  -d '{"ref_produit": "TEST-001", "marque": "TestBrand", "designation": "Test Product"}'
+
+# Test vector search
+curl "http://localhost:8000/products/search/similar?query=industrial%20contactor&limit=5"
+
+# Test description generation
+curl -X POST http://localhost:8000/products/1/description/generate \
+  -H "Content-Type: application/json" \
+  -d '{"length": "medium"}'
+
+# Test adding technical spec
+curl -X POST http://localhost:8000/products/1/specs \
+  -H "Content-Type: application/json" \
+  -d '{"attribut": "Tension", "valeur": "230", "unite": "V"}'
+```
+
+---
+
+## Notes
+
+### Database Connection
+- Host: localhost
+- Port: 5433
+- Database: postgres
+- User: postgres
+- Password: admin
+
+### DeepSeek API
+- Base URL: https://api.deepseek.com/v1
+- Model: deepseek-v4-pro
+- Embedding Model: deepseek-v4-pro
+
+### Vector Configuration
+- Dimension: 1536
+- Index Type: ivfflat
+- Distance Metric: cosine
+
+### Description Generation
+- Uses technical_specs table as source data
+- Supports 3 length options: short, medium, long
+- Generates both French and English descriptions
+- Tracks manual edits with last_edited_by_human flag
+
+---
+
+*Last Updated: 2026-05-08*

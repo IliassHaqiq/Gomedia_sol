@@ -1,0 +1,380 @@
+.product-manager {
+  padding: 20px;
+}
+
+.product-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.product-header h2 {
+  margin: 0;
+  color: #333;
+}
+
+.btn-refresh {
+  padding: 8px 16px;
+  background: #4a90e2;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-refresh:hover:not(:disabled) {
+  background: #357abd;
+}
+
+.btn-refresh:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.error-message {
+  background: #fee;
+  color: #c33;
+  padding: 12px;
+  border-radius: 4px;
+  margin-bottom: 20px;
+  border: 1px solid #fcc;
+}
+
+.product-layout {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 20px;
+  min-height: 600px;
+}
+
+.product-list {
+  background: #f9f9f9;
+  border-radius: 8px;
+  padding: 16px;
+  overflow-y: auto;
+  max-height: 700px;
+}
+
+.product-list h3 {
+  margin-top: 0;
+  margin-bottom: 12px;
+  color: #555;
+  font-size: 16px;
+}
+
+.product-items {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.product-item {
+  padding: 12px;
+  margin-bottom: 8px;
+  background: white;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 2px solid transparent;
+}
+
+.product-item:hover {
+  border-color: #4a90e2;
+  transform: translateX(2px);
+}
+
+.product-item.active {
+  border-color: #4a90e2;
+  background: #e8f4ff;
+}
+
+.product-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.product-ref {
+  font-weight: 600;
+  color: #333;
+}
+
+.product-brand {
+  font-size: 12px;
+  color: #666;
+  background: #f0f0f0;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.product-designation {
+  font-size: 13px;
+  color: #666;
+  margin-top: 4px;
+}
+
+.product-details {
+  background: white;
+  border-radius: 8px;
+  padding: 20px;
+  overflow-y: auto;
+  max-height: 700px;
+}
+
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid #eee;
+}
+
+.detail-header h3 {
+  margin: 0;
+  color: #333;
+}
+
+.brand-badge {
+  background: #4a90e2;
+  color: white;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.detail-section {
+  margin-bottom: 24px;
+}
+
+.detail-section h4 {
+  margin: 0 0 12px 0;
+  color: #555;
+  font-size: 15px;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.description-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-desc {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+
+.btn-desc:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-short {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.btn-short:hover:not(:disabled) {
+  background: #c8e6c9;
+}
+
+.btn-medium {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.btn-medium:hover:not(:disabled) {
+  background: #bbdefb;
+}
+
+.btn-long {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.btn-long:hover:not(:disabled) {
+  background: #ffe0b2;
+}
+
+.descriptions-content {
+  display: grid;
+  gap: 16px;
+}
+
+.description-box {
+  background: #f9f9f9;
+  padding: 16px;
+  border-radius: 6px;
+  border-left: 4px solid #4a90e2;
+}
+
+.description-box h5 {
+  margin: 0 0 8px 0;
+  color: #555;
+  font-size: 14px;
+}
+
+.description-box p {
+  margin: 0;
+  color: #333;
+  line-height: 1.6;
+}
+
+.edited-badge {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #666;
+  background: #fff;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid #ddd;
+}
+
+.no-description {
+  color: #999;
+  font-style: italic;
+}
+
+.specs-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.specs-table th,
+.specs-table td {
+  padding: 10px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.specs-table th {
+  background: #f9f9f9;
+  font-weight: 600;
+  color: #555;
+  font-size: 13px;
+}
+
+.specs-table td {
+  color: #333;
+  font-size: 14px;
+}
+
+.btn-delete {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.btn-delete:hover {
+  background: #fee;
+}
+
+.btn-add-spec {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: #4a90e2;
+  color: white;
+  cursor: pointer;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+.btn-add-spec:hover {
+  background: #357abd;
+}
+
+.spec-form {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #f9f9f9;
+  border-radius: 6px;
+}
+
+.spec-form input {
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.spec-form button {
+  padding: 8px 16px;
+  background: #4a90e2;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.spec-form button:hover {
+  background: #357abd;
+}
+
+.no-specs {
+  color: #999;
+  font-style: italic;
+}
+
+.files-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.files-list li {
+  padding: 8px 12px;
+  background: #f9f9f9;
+  border-radius: 4px;
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.file-date {
+  color: #999;
+  font-size: 12px;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: #999;
+  text-align: center;
+}
+
+.empty-state p {
+  margin: 0 0 8px 0;
+}
+
+.empty-state small {
+  font-size: 13px;
+}
