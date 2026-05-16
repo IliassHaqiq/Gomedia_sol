@@ -118,6 +118,15 @@ class DescriptionGeneratorService:
 
         return "\n".join(formatted)
 
+    def get_length_config(self, length: str) -> Dict[str, int]:
+        """Word counts and token budget aligned with app.services.llm.LENGTH_CONFIG."""
+        configs = {
+            DescriptionLength.SHORT: {"min_words": 200, "max_words": 500, "max_tokens": 3000},
+            DescriptionLength.MEDIUM: {"min_words": 500, "max_words": 800, "max_tokens": 5000},
+            DescriptionLength.LONG: {"min_words": 800, "max_words": 1300, "max_tokens": 8000},
+        }
+        return configs.get(length, configs[DescriptionLength.MEDIUM])
+
     def get_length_instructions(self, length: str) -> Dict[str, str]:
         """
         Get length-specific instructions for description generation
@@ -128,19 +137,17 @@ class DescriptionGeneratorService:
         Returns:
             Dict with French and English instructions
         """
+        cfg = self.get_length_config(length)
+        min_w, max_w = cfg["min_words"], cfg["max_words"]
+        word_rule = (
+            f"MINIMUM {min_w} words, target {min_w}-{max_w} words. "
+            "Write a full professional catalogue description (introduction, technical details, applications, benefits). "
+            "Do not be brief."
+        )
         instructions = {
-            DescriptionLength.SHORT: {
-                "fr": "Génère une description courte et concise (2-3 phrases maximum).",
-                "en": "Generate a short and concise description (2-3 sentences maximum)."
-            },
-            DescriptionLength.MEDIUM: {
-                "fr": "Génère une description de longueur moyenne (4-6 phrases).",
-                "en": "Generate a medium-length description (4-6 sentences)."
-            },
-            DescriptionLength.LONG: {
-                "fr": "Génère une description détaillée et complète (7-10 phrases ou plus).",
-                "en": "Generate a detailed and comprehensive description (7-10 sentences or more)."
-            }
+            DescriptionLength.SHORT: {"fr": word_rule, "en": word_rule},
+            DescriptionLength.MEDIUM: {"fr": word_rule, "en": word_rule},
+            DescriptionLength.LONG: {"fr": word_rule, "en": word_rule},
         }
 
         return instructions.get(length, instructions[DescriptionLength.MEDIUM])
@@ -218,10 +225,13 @@ Generate the description in JSON format with 'descriptif_fr' and 'descriptif_en'
             {"role": "user", "content": user_prompt}
         ]
 
+        cfg = self.get_length_config(length)
+
         try:
             result = await deepseek_service.generate_completion(
                 messages=messages,
-                temperature=0.7,
+                temperature=0.5,
+                max_tokens=cfg["max_tokens"],
                 response_format={"type": "json_object"}
             )
 

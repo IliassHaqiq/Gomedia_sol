@@ -7,7 +7,7 @@ import openpyxl
 import pdfplumber
 
 
-MAX_TEXT_LENGTH = 6000
+MAX_TEXT_LENGTH = 12000
 
 
 def clean_text(text: str) -> str:

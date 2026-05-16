@@ -6,7 +6,9 @@ export default function UploadFiles({ apiKey }) {
   const [isUploading, setIsUploading] = useState(false)
   const [uploadResult, setUploadResult] = useState(null)
   const [dragActive, setDragActive] = useState(false)
-  const [descriptionLength, setDescriptionLength] = useState('medium')
+  const [descriptionLength, setDescriptionLength] = useState(
+    () => localStorage.getItem('descriptionLength') || 'medium'
+  )
 
   const handleDrag = (e) => {
     e.preventDefault()
@@ -98,15 +100,21 @@ export default function UploadFiles({ apiKey }) {
         headers['Authorization'] = `Bearer ${apiKey}`
       }
 
-      await axios.post(
-        `/api/documents/${documentId}/extract?description_length=${descriptionLength}`,
-        {},
-        { headers }
-      )
-
       setUploadResult((prev) => ({
         ...prev,
-        extraction: { type: 'success', message: 'Extraction automatique démarrée' },
+        extraction: { type: 'info', message: '⏳ Extraction en cours (1–3 min en mode moyen)…' },
+      }))
+
+      const extractRes = await axios.post(
+        `/api/documents/${documentId}/extract?description_length=${descriptionLength}`,
+        {},
+        { headers, timeout: 360000 }
+      )
+
+      const count = extractRes.data?.products?.length ?? 0
+      setUploadResult((prev) => ({
+        ...prev,
+        extraction: { type: 'success', message: `✅ Extraction terminée — ${count} produit(s)` },
       }))
     } catch (error) {
       setUploadResult((prev) => ({
@@ -155,12 +163,16 @@ export default function UploadFiles({ apiKey }) {
         <select
           id="descriptionLength"
           value={descriptionLength}
-          onChange={(e) => setDescriptionLength(e.target.value)}
+          onChange={(e) => {
+            const value = e.target.value
+            setDescriptionLength(value)
+            localStorage.setItem('descriptionLength', value)
+          }}
           className="select-field"
         >
-          <option value="short">Court (200-500 mots)</option>
-          <option value="medium">Moyen (500-800 mots)</option>
-          <option value="long">Long (800-1300 mots)</option>
+          <option value="short">Court (min. 200 mots / langue)</option>
+          <option value="medium">Moyen (min. 400 mots / langue)</option>
+          <option value="long">Long (min. 700 mots / langue)</option>
         </select>
       </div>
 

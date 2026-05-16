@@ -171,17 +171,29 @@ def extract_reference_from_filename(filename: str) -> str:
 def create_product_from_document(
     doc: Document,
     db: Session,
-    description_length: str = "medium"
+    description_length: str = "medium",
+    multi_product: bool = False,
 ) -> List[Product]:
     """
     Extrait le texte du document, génère les données via NVIDIA NIM,
     et crée un ou plusieurs produits avec leurs descriptions, specs et embeddings.
     Retourne une liste de produits créés/mis à jour.
     """
-    text = extract_text_from_file(doc.file_path)
+    import time
+    t0 = time.perf_counter()
 
-    # Use NVIDIA NIM to extract structured data (may return multiple products)
-    products_data = generate_specs_multi(text, doc.filename, description_length)
+    logger.info(f"📖 Lecture du fichier: {doc.filename}")
+    text = extract_text_from_file(doc.file_path)
+    logger.info(f"📖 Texte extrait: {len(text)} caractères ({time.perf_counter() - t0:.1f}s)")
+
+    t_llm = time.perf_counter()
+    if multi_product:
+        logger.info("🤖 Mode multi-produits")
+        products_data = generate_specs_multi(text, doc.filename, description_length)
+    else:
+        logger.info("🤖 Mode standard (extraction + rédaction longue)")
+        products_data = [generate_spec(text, doc.filename, description_length)]
+    logger.info(f"🤖 LLM terminé ({time.perf_counter() - t_llm:.1f}s)")
 
     created_products = []
     file_hash = calculate_file_hash(doc.file_path)
@@ -319,7 +331,10 @@ def create_product_from_document(
     for product in created_products:
         db.refresh(product)
 
-    logger.info(f"✅ Extraction completed: {len(created_products)} product(s) created/updated from {doc.filename}")
+    logger.info(
+        f"✅ Extraction completed: {len(created_products)} product(s) from {doc.filename} "
+        f"(total {time.perf_counter() - t0:.1f}s)"
+    )
 
     return created_products
 
@@ -474,6 +489,12 @@ def extract_document(doc_id: int, description_length: str = "medium", db: Sessio
 
     logger.info(f"📄 Document trouvé: {doc.filename} (id: {doc.id}, status: {doc.status})")
 
+    if doc.status == "processing":
+        logger.warning("⚠️ Document id=%s déjà en 'processing' — nouvelle tentative autorisée", doc_id)
+
+    doc.status = "processing"
+    db.commit()
+
     try:
         products = create_product_from_document(doc, db, description_length)
         logger.info(f"✅ Extraction réussie: {len(products)} produit(s) créé(s)/mis à jour")
@@ -495,11 +516,15 @@ def extract_document(doc_id: int, description_length: str = "medium", db: Sessio
         }
 
     except ValueError as e:
+        doc.status = "error"
+        db.commit()
         logger.error(f"❌ Erreur extraction (ValueError): {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Erreur extraction: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        doc.status = "error"
+        db.commit()
         logger.error(f"❌ Erreur specification inattendue: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Erreur specification: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/extract-all")
@@ -549,6 +574,26 @@ def extract_all_uploaded_documents(description_length: str = "medium", db: Sessi
         "message": "Extraction en lot terminée",
         "processed_count": len(results),
         "results": results
+    }
+
+
+@router.post("/{doc_id}/reset")
+def reset_document_status(doc_id: int, db: Session = Depends(get_db)):
+    """Remet un document bloqué en 'processing' à 'uploaded' pour pouvoir ré-extraire."""
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document introuvable")
+
+    previous = doc.status
+    if doc.status in ("processing", "error"):
+        doc.status = "uploaded"
+        db.commit()
+
+    return {
+        "document_id": doc.id,
+        "filename": doc.filename,
+        "previous_status": previous,
+        "status": doc.status,
     }
 
 

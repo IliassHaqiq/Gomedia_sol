@@ -483,9 +483,9 @@ function SettingsSection({ apiKey, setApiKey }) {
             value={descriptionLength}
             onChange={(e) => setDescriptionLength(e.target.value)}
           >
-            <option value="short">Short (50-100 words)</option>
-            <option value="medium">Medium (100-200 words)</option>
-            <option value="long">Long (200-400 words)</option>
+            <option value="short">Court (200-500 mots)</option>
+            <option value="medium">Moyen (500-800 mots)</option>
+            <option value="long">Long (800-1300 mots)</option>
           </select>
         </div>
 

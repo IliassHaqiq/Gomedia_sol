@@ -1,97 +1,127 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 
+const EXTRACT_TIMEOUT_MS = 360000 // 6 min — doit dépasser NIM_TIMEOUT côté serveur
+const POLL_INTERVAL_MS = 8000 // pendant une extraction uniquement
+
 export default function DocumentList({ apiKey, onSelectDocument, selectedDocumentId }) {
+  const descriptionLength = localStorage.getItem('descriptionLength') || 'medium'
   const [documents, setDocuments] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [initialLoading, setInitialLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [extractingId, setExtractingId] = useState(null)
 
-  const fetchDocuments = async () => {
-    setLoading(true)
-    setError(null)
-
-    try {
-      const headers = {}
-      if (apiKey) {
-        headers['Authorization'] = `Bearer ${apiKey}`
+  const fetchDocuments = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!silent) {
+        setInitialLoading(true)
       }
+      setError(null)
 
-      const response = await axios.get('/api/documents/', { headers })
-      setDocuments(response.data || [])
-    } catch (err) {
-      setError(err.response?.data?.detail || 'Erreur lors du chargement des documents')
-    } finally {
-      setLoading(false)
-    }
-  }
+      try {
+        const headers = {}
+        if (apiKey) {
+          headers['Authorization'] = `Bearer ${apiKey}`
+        }
+
+        const response = await axios.get('/api/documents/', { headers })
+        setDocuments(response.data || [])
+      } catch (err) {
+        setError(err.response?.data?.detail || 'Erreur lors du chargement des documents')
+      } finally {
+        if (!silent) {
+          setInitialLoading(false)
+        }
+      }
+    },
+    [apiKey]
+  )
 
   useEffect(() => {
-    fetchDocuments()
-    const interval = setInterval(fetchDocuments, 10000) // Refresh every 10s
-    return () => clearInterval(interval)
-  }, [apiKey])
+    fetchDocuments({ silent: false })
+  }, [fetchDocuments])
 
-  const refreshDocuments = () => {
-    fetchDocuments()
-  }
+  // Poll uniquement pendant un clic « Extraire » actif (évite la boucle infinie)
+  useEffect(() => {
+    if (extractingId === null) {
+      return undefined
+    }
+
+    const interval = setInterval(() => {
+      fetchDocuments({ silent: true })
+    }, POLL_INTERVAL_MS)
+
+    return () => clearInterval(interval)
+  }, [extractingId, fetchDocuments])
 
   const extractDocument = async (docId) => {
+    setExtractingId(docId)
     try {
       const headers = {}
       if (apiKey) {
         headers['Authorization'] = `Bearer ${apiKey}`
       }
 
-      await axios.post(
-        `/api/documents/${docId}/extract`,
+      const response = await axios.post(
+        `/api/documents/${docId}/extract?description_length=${descriptionLength}`,
         {},
-        { headers }
+        { headers, timeout: EXTRACT_TIMEOUT_MS }
       )
 
-      alert('✅ Extraction démarrée !')
-      fetchDocuments()
+      const count = response.data?.products?.length ?? 0
+      alert(`✅ Extraction terminée — ${count} produit(s) créé(s).`)
+      await fetchDocuments({ silent: true })
     } catch (err) {
-      alert(`❌ Erreur extraction: ${err.response?.data?.detail || err.message}`)
+      const detail = err.response?.data?.detail
+      const msg = typeof detail === 'string' ? detail : err.message
+      if (err.code === 'ECONNABORTED') {
+        alert('⏱️ Délai dépassé (>6 min). Vérifiez les logs serveur ou réessayez en mode « Court ».')
+      } else {
+        alert(`❌ Erreur extraction: ${msg}`)
+      }
+      await fetchDocuments({ silent: true })
+    } finally {
+      setExtractingId(null)
     }
   }
 
-  const deleteDocument = async (docId) => {
-    if (!window.confirm('Supprimer ce document et ses spécifications ?')) return
-
+  const resetDocument = async (docId, e) => {
+    e.stopPropagation()
     try {
       const headers = {}
-      if (apiKey) {
-        headers['Authorization'] = `Bearer ${apiKey}`
-      }
-
-      // Note: API doesn't have delete endpoint yet, this is for future
-      alert('Fonctionnalité de suppression à implémenter côté serveur')
-
-      // For now, just refresh
-      fetchDocuments()
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+      await axios.post(`/api/documents/${docId}/reset`, {}, { headers })
+      await fetchDocuments({ silent: true })
     } catch (err) {
-      alert(`❌ Erreur suppression: ${err.response?.data?.detail || err.message}`)
+      alert(`❌ ${err.response?.data?.detail || err.message}`)
     }
   }
 
-  if (loading) {
+  const deleteDocument = async (e) => {
+    e.stopPropagation()
+    if (!window.confirm('Supprimer ce document et ses spécifications ?')) return
+    alert('Fonctionnalité de suppression à implémenter côté serveur')
+    await fetchDocuments({ silent: true })
+  }
+
+  if (initialLoading) {
     return <div className="loading">📡 Chargement des documents...</div>
   }
 
-  if (error) {
+  if (error && documents.length === 0) {
     return <div className="error">❌ {error}</div>
   }
 
   return (
     <div className="document-section">
       <div className="section-header">
-        <h2 className="section-title">
-          📋 Documents ({documents.length})
-        </h2>
-        <button onClick={refreshDocuments} className="btn-refresh">
+        <h2 className="section-title">📋 Documents ({documents.length})</h2>
+        <button type="button" onClick={() => fetchDocuments({ silent: true })} className="btn-refresh">
           🔄 Rafraîchir
         </button>
       </div>
+
+      {error && <div className="error">⚠️ {error}</div>}
 
       {documents.length === 0 ? (
         <div className="empty-state">
@@ -115,28 +145,57 @@ export default function DocumentList({ apiKey, onSelectDocument, selectedDocumen
                     ID: {doc.id} • {new Date(doc.uploaded_at).toLocaleDateString()}
                   </div>
                 </div>
-                <div className={`doc-status status-${doc.status}`}>
-                  {doc.status}
+                <div
+                  className={`doc-status status-${
+                    doc.status === 'processing' || extractingId === doc.id ? 'processing' : doc.status
+                  }`}
+                >
+                  {doc.status === 'processing' || extractingId === doc.id
+                    ? '⏳ extraction…'
+                    : doc.status}
                 </div>
               </div>
 
               <div className="doc-actions">
-                {doc.status === 'uploaded' && (
+                {(doc.status === 'uploaded' || doc.status === 'error') && (
                   <button
+                    type="button"
                     onClick={(e) => {
                       e.stopPropagation()
                       extractDocument(doc.id)
                     }}
                     className="btn btn-success"
+                    disabled={extractingId !== null}
                   >
-                    🔍 Extraire
+                    {extractingId === doc.id ? '⏳ En cours…' : '🔍 Extraire'}
                   </button>
                 )}
+                {doc.status === 'processing' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        extractDocument(doc.id)
+                      }}
+                      className="btn btn-success"
+                      disabled={extractingId !== null}
+                    >
+                      {extractingId === doc.id ? '⏳ En cours…' : '🔁 Reprendre'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => resetDocument(doc.id, e)}
+                      className="btn btn-secondary"
+                      disabled={extractingId !== null}
+                    >
+                      ↩ Annuler
+                    </button>
+                  </>
+                )}
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    deleteDocument(doc.id)
-                  }}
+                  type="button"
+                  onClick={deleteDocument}
                   className="btn btn-danger"
                 >
                   🗑️ Supprimer
