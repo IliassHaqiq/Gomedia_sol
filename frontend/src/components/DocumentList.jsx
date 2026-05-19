@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 
-const EXTRACT_TIMEOUT_MS = 360000 // 6 min — doit dépasser NIM_TIMEOUT côté serveur
+const EXTRACT_TIMEOUT_MS = 720000 // 12 min — doit dépasser OLLAMA_TIMEOUT côté serveur (2 appels LLM)
 const POLL_INTERVAL_MS = 8000 // pendant une extraction uniquement
 
 export default function DocumentList({ apiKey, onSelectDocument, selectedDocumentId }) {
@@ -54,7 +54,19 @@ export default function DocumentList({ apiKey, onSelectDocument, selectedDocumen
     return () => clearInterval(interval)
   }, [extractingId, fetchDocuments])
 
+  const hasProcessingDoc = documents.some((d) => d.status === 'processing')
+
   const extractDocument = async (docId) => {
+    const target = documents.find((d) => d.id === docId)
+    if (target?.status === 'processing') {
+      alert('⏳ Extraction déjà en cours pour ce document. Utilisez « Annuler » si elle est bloquée.')
+      return
+    }
+    if (hasProcessingDoc) {
+      alert('⏳ Une autre extraction est en cours. Attendez qu\'elle se termine.')
+      return
+    }
+
     setExtractingId(docId)
     try {
       const headers = {}
@@ -74,8 +86,10 @@ export default function DocumentList({ apiKey, onSelectDocument, selectedDocumen
     } catch (err) {
       const detail = err.response?.data?.detail
       const msg = typeof detail === 'string' ? detail : err.message
-      if (err.code === 'ECONNABORTED') {
-        alert('⏱️ Délai dépassé (>6 min). Vérifiez les logs serveur ou réessayez en mode « Court ».')
+      if (err.response?.status === 409) {
+        alert(`⏳ ${msg}`)
+      } else if (err.code === 'ECONNABORTED') {
+        alert('⏱️ Délai dépassé (>12 min). Vérifiez les logs serveur ou réessayez en mode « Court ».')
       } else {
         alert(`❌ Erreur extraction: ${msg}`)
       }
@@ -171,27 +185,14 @@ export default function DocumentList({ apiKey, onSelectDocument, selectedDocumen
                   </button>
                 )}
                 {doc.status === 'processing' && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        extractDocument(doc.id)
-                      }}
-                      className="btn btn-success"
-                      disabled={extractingId !== null}
-                    >
-                      {extractingId === doc.id ? '⏳ En cours…' : '🔁 Reprendre'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => resetDocument(doc.id, e)}
-                      className="btn btn-secondary"
-                      disabled={extractingId !== null}
-                    >
-                      ↩ Annuler
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    onClick={(e) => resetDocument(doc.id, e)}
+                    className="btn btn-secondary"
+                    disabled={extractingId !== null}
+                  >
+                    ↩ Annuler
+                  </button>
                 )}
                 <button
                   type="button"

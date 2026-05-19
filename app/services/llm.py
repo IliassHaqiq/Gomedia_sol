@@ -4,30 +4,36 @@ import requests
 import re
 import os
 import time
-from typing import Any, Dict, List
+import threading
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# NVIDIA NIM Configuration
-NIM_API_URL = os.getenv("NIM_API_URL", "https://integrate.api.nvidia.com/v1")
-NIM_API_KEY = os.getenv("NIM_API_KEY")
-NIM_MODEL = os.getenv("NIM_MODEL", "meta/llama-3-70b-instruct")
+# Ollama Configuration
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:latest")
 
-# Rate limiting - NVIDIA NIM has 40 requests per minute limit
+# Optional spacing between requests (useful if Ollama is under heavy load)
 LAST_REQUEST_TIME = None
-MIN_REQUEST_INTERVAL = float(os.getenv("NIM_REQUEST_INTERVAL", "0.4"))
+MIN_REQUEST_INTERVAL = float(os.getenv("OLLAMA_REQUEST_INTERVAL", "0.5"))
 
-# Longueur des descriptions (mots par langue)
+# Ollama handles one generation at a time — serialize all calls
+_OLLAMA_LOCK = threading.Lock()
+
+# Longueur des descriptions (mots par langue) — tokens adaptés au LLM local
 LENGTH_CONFIG = {
-    "short": {"min_words": 200, "max_words": 400, "max_tokens": 3000},
-    "medium": {"min_words": 400, "max_words": 600, "max_tokens": 5000},
-    "long": {"min_words": 700, "max_words": 1000, "max_tokens": 7000},
+    "short": {"min_words": 200, "max_words": 400, "max_tokens": 1500},
+    "medium": {"min_words": 400, "max_words": 600, "max_tokens": 2500},
+    "long": {"min_words": 700, "max_words": 1000, "max_tokens": 4000},
 }
 
-NIM_TIMEOUT = int(os.getenv("NIM_TIMEOUT", "180"))
+EXTRACT_MAX_TOKENS = int(os.getenv("OLLAMA_EXTRACT_MAX_TOKENS", "2048"))
+EXTRACT_TEXT_LIMIT = int(os.getenv("OLLAMA_EXTRACT_TEXT_LIMIT", "8000"))
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "360"))
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
 
 
 def _get_length_config(description_length: str) -> Dict[str, int]:
@@ -73,32 +79,29 @@ def rate_limit():
     LAST_REQUEST_TIME = time.time()
 
 
-def _post_to_nim(
+def _post_to_ollama(
     prompt: str,
     max_tokens: int = 2000,
     max_retries: int = 3,
     temperature: float = 0.1,
+    json_mode: bool = False,
 ) -> str:
-    """Send prompt to NVIDIA NIM API and return the response text with retry logic."""
-    if not NIM_API_KEY:
-        raise RuntimeError("NIM_API_KEY not set in environment. Get one from https://build.nvidia.com")
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {NIM_API_KEY}"
-    }
+    """Send prompt to Ollama and return the response text with retry logic."""
+    headers = {"Content-Type": "application/json"}
 
     payload = {
-        "model": NIM_MODEL,
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        "temperature": temperature,
-        "max_tokens": max_tokens
+        "model": OLLAMA_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "options": {
+            "temperature": temperature,
+            "num_predict": max_tokens,
+        },
     }
+    if json_mode:
+        payload["format"] = "json"
+
+    payload["options"]["num_ctx"] = OLLAMA_NUM_CTX
 
     for attempt in range(max_retries):
         try:
@@ -106,109 +109,114 @@ def _post_to_nim(
 
             t0 = time.perf_counter()
             logger.info(
-                "🌐 Appel NIM (tentative %s/%s, max_tokens=%s, timeout=%ss)...",
+                "Appel Ollama (tentative %s/%s, max_tokens=%s, timeout=%ss)...",
                 attempt + 1,
                 max_retries,
                 max_tokens,
-                NIM_TIMEOUT,
+                OLLAMA_TIMEOUT,
             )
 
-            response = requests.post(
-                f"{NIM_API_URL}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=NIM_TIMEOUT,
-            )
-            response.raise_for_status()
+            with _OLLAMA_LOCK:
+                response = requests.post(
+                    f"{OLLAMA_BASE_URL}/api/chat",
+                    headers=headers,
+                    json=payload,
+                    timeout=OLLAMA_TIMEOUT,
+                )
+                response.raise_for_status()
 
-            result = response.json()
-            if "choices" in result and len(result["choices"]) > 0:
-                content = result["choices"][0].get("message", {}).get("content", "")
+                result = response.json()
+                message = result.get("message", {})
+                content = message.get("content", "") if isinstance(message, dict) else ""
+
+                if not content and "choices" in result:
+                    choices = result.get("choices", [])
+                    if choices:
+                        content = choices[0].get("message", {}).get("content", "")
+
+            if content:
                 elapsed = time.perf_counter() - t0
-                usage = result.get("usage", {})
+                eval_count = result.get("eval_count", "?")
                 logger.info(
-                    "✅ NIM répondu en %.1fs (%s caractères, tokens: %s)",
+                    "Ollama répondu en %.1fs (%s caractères, tokens: %s)",
                     elapsed,
                     len(content),
-                    usage.get("total_tokens", "?"),
+                    eval_count,
                 )
-                if not content:
-                    raise RuntimeError("Empty response content from NIM")
                 return content
-            else:
-                raise RuntimeError(f"Unexpected response format from NIM: {result}")
 
-        except requests.exceptions.Timeout as e:
-            logger.warning("⏱️ Timeout NIM après %ss (tentative %s/%s)", NIM_TIMEOUT, attempt + 1, max_retries)
+            raise RuntimeError(f"Unexpected response format from Ollama: {result}")
+
+        except requests.exceptions.Timeout:
+            logger.warning(
+                "⏱️ Timeout Ollama après %ss (tentative %s/%s)",
+                OLLAMA_TIMEOUT,
+                attempt + 1,
+                max_retries,
+            )
             if attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 5  # Exponential backoff: 5s, 10s, 15s
-                time.sleep(wait_time)
+                time.sleep((attempt + 1) * 5)
                 continue
             raise RuntimeError(
-                f"NIM API timeout après {NIM_TIMEOUT}s × {max_retries} tentatives. "
-                "Essayez 'short' ou vérifiez https://build.nvidia.com"
+                f"Ollama timeout après {OLLAMA_TIMEOUT}s × {max_retries} tentatives. "
+                "Essayez le mode « Court » ou vérifiez qu'Ollama tourne (ollama serve)."
             )
 
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code
-            if status == 429:
-                if attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 10
-                    logger.warning("Rate limit 429, retry in %ss...", wait_time)
-                    time.sleep(wait_time)
-                    continue
+            if status == 404:
                 raise RuntimeError(
-                    "Limite NVIDIA NIM atteinte (429). Réessayez dans 1 minute."
-                )
-            if status == 401:
-                raise RuntimeError(
-                    "Clé NIM invalide (401). Vérifiez NIM_API_KEY sur https://build.nvidia.com"
+                    f"Modèle Ollama introuvable ({OLLAMA_MODEL}). "
+                    f"Installez-le avec: ollama pull {OLLAMA_MODEL}"
                 )
             if status in (502, 503, 504):
                 if attempt < max_retries - 1:
                     wait_time = (attempt + 1) * 8
                     logger.warning(
-                        "NIM indisponible (%s), nouvelle tentative dans %ss...",
+                        "Ollama indisponible (%s), nouvelle tentative dans %ss...",
                         status,
                         wait_time,
                     )
                     time.sleep(wait_time)
                     continue
                 raise RuntimeError(
-                    f"Service NVIDIA NIM temporairement indisponible ({status}). "
+                    f"Service Ollama temporairement indisponible ({status}). "
                     "Réessayez dans quelques minutes ou utilisez le mode « Court »."
                 )
             try:
                 error_json = e.response.json()
-                if "error" in error_json:
-                    msg = error_json["error"].get("message", str(e))
-                    raise RuntimeError(f"Erreur NVIDIA NIM: {msg}")
+                msg = error_json.get("error", str(e))
+                raise RuntimeError(f"Erreur Ollama: {msg}")
             except RuntimeError:
                 raise
             except Exception:
                 pass
             raise RuntimeError(
-                f"Erreur NVIDIA NIM (HTTP {status}). "
-                "Vérifiez le modèle NIM_MODEL dans .env."
+                f"Erreur Ollama (HTTP {status}). "
+                "Vérifiez OLLAMA_MODEL et OLLAMA_BASE_URL dans .env."
             )
 
         except requests.exceptions.ConnectionError:
             if attempt < max_retries - 1:
                 wait_time = (attempt + 1) * 5
-                print(f"Connection error, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                logger.warning(
+                    "Connexion Ollama échouée, nouvelle tentative dans %ss...",
+                    wait_time,
+                )
                 time.sleep(wait_time)
                 continue
-            raise RuntimeError("Cannot connect to NIM API. Check internet connection.")
+            raise RuntimeError(
+                f"Impossible de se connecter à Ollama ({OLLAMA_BASE_URL}). "
+                "Démarrez Ollama avec: ollama serve"
+            )
 
         except Exception as e:
             if attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 5
-                print(f"Error occurred, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
-                time.sleep(wait_time)
+                time.sleep((attempt + 1) * 5)
                 continue
-            raise RuntimeError(f"NIM API error: {str(e)}")
+            raise RuntimeError(f"Erreur Ollama: {str(e)}")
 
-    raise RuntimeError(f"NIM API failed after {max_retries} retries")
+    raise RuntimeError(f"Ollama a échoué après {max_retries} tentatives")
 
 
 def _extract_json(raw_text: str) -> Dict[str, Any]:
@@ -219,6 +227,13 @@ def _extract_json(raw_text: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
+    code_block = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+    if code_block:
+        try:
+            return json.loads(code_block.group(1))
+        except json.JSONDecodeError:
+            pass
+
     match = re.search(r"\{.*\}", raw_text, re.DOTALL)
     if match:
         candidate = match.group(0)
@@ -228,6 +243,48 @@ def _extract_json(raw_text: str) -> Dict[str, Any]:
             pass
 
     raise ValueError(f"JSON introuvable dans la réponse du modèle: {raw_text[:500]}")
+
+
+def _parse_descriptions_fallback(raw_text: str) -> Optional[Dict[str, str]]:
+    """Parse FR/EN descriptions when the model returns markdown instead of JSON."""
+    text = raw_text.strip()
+    en_pattern = (
+        r"(?:\*\*)?(?:Description\s+(?:Anglaise|English|en anglais)"
+        r"|English\s+Description)(?:\*\*)?\s*\n+"
+    )
+    parts = re.split(en_pattern, text, maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) < 2:
+        return None
+
+    fr_text = re.sub(
+        r"^[\s\S]*?(?:\*\*)?Description\s+Française(?:\*\*)?\s*\n+",
+        "",
+        parts[0],
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
+    en_text = parts[1].strip()
+
+    if len(fr_text) < 80 or len(en_text) < 80:
+        return None
+
+    logger.warning("Réponse markdown détectée — descriptions récupérées via parseur de secours")
+    return {"description_fr": fr_text, "description_en": en_text}
+
+
+def _extract_descriptions(raw_text: str) -> Dict[str, str]:
+    """Extract description_fr / description_en from JSON or markdown fallback."""
+    try:
+        data = _extract_json(raw_text)
+        return {
+            "description_fr": str(data.get("description_fr", "")).strip(),
+            "description_en": str(data.get("description_en", "")).strip(),
+        }
+    except ValueError:
+        fallback = _parse_descriptions_fallback(raw_text)
+        if fallback:
+            return fallback
+        raise
 
 
 def _normalize_spec_keys(specs: Dict[str, Any]) -> Dict[str, Any]:
@@ -306,7 +363,7 @@ Designation: {designation}
 Manufacturer: {fabricant}
 """.strip()
 
-    raw = _post_to_nim(fallback_prompt, max_tokens=500)
+    raw = _post_to_ollama(fallback_prompt, max_tokens=500, json_mode=True)
     translated = _extract_json(raw)
 
     desc = str(translated.get("description_en", "")).strip()
@@ -323,7 +380,7 @@ Analyse le contenu suivant provenant du fichier "{filename}".
 
 Ta mission:
 1. Détecter si ce document contient UNE ou PLUSIEURS fiches techniques de produits.
-2. Pour chaque produit, extraire référence, désignation, fabricant et spécifications.
+2. Pour chaque produit, extraire référence, désignation (qui est tout simple une simple phrase qui decrit le produit), fabricant et spécifications.
 3. NE PAS rédiger de descriptions — laisse description_fr et description_en à "PENDING".
 4. Retourner STRICTEMENT un JSON valide.
 5. Si une information est introuvable, mettre "N/A".
@@ -350,10 +407,10 @@ Règles importantes:
 - Répondre uniquement avec du JSON valide.
 
 Contenu:
-{text}
+{text[:EXTRACT_TEXT_LIMIT]}
 """.strip()
 
-    raw = _post_to_nim(prompt, max_tokens=5000, temperature=0.1)
+    raw = _post_to_ollama(prompt, max_tokens=EXTRACT_MAX_TOKENS, temperature=0.1, json_mode=True)
     data = _extract_json(raw)
 
     products = data.get("products", [])
@@ -413,7 +470,7 @@ Retourne STRICTEMENT ce JSON (un élément par produit, même index):
 }}
 """.strip()
 
-    raw = _post_to_nim(prompt, max_tokens=batch_max_tokens, temperature=0.35)
+    raw = _post_to_ollama(prompt, max_tokens=batch_max_tokens, temperature=0.2, json_mode=True)
     data = _extract_json(raw)
     items = data.get("products", [])
     if not isinstance(items, list):
@@ -484,8 +541,8 @@ Chaque langue doit atteindre AU MINIMUM {min_words} mots.
 Retourne STRICTEMENT: {{"description_fr": "...", "description_en": "..."}}
 """.strip()
 
-    raw = _post_to_nim(prompt, max_tokens=cfg["max_tokens"], temperature=0.4)
-    expanded = _extract_json(raw)
+    raw = _post_to_ollama(prompt, max_tokens=cfg["max_tokens"], temperature=0.2, json_mode=True)
+    expanded = _extract_descriptions(raw)
     result = {
         "description_fr": str(expanded.get("description_fr", fr)).strip() or fr,
         "description_en": str(expanded.get("description_en", en)).strip() or en,
@@ -530,15 +587,17 @@ Extrait datasheet:
 
 {structure}
 
-Retourne STRICTEMENT ce JSON (rien avant/après):
-{{"description_fr": "...", "description_en": "..."}}
+RÈGLE ABSOLUE: réponds UNIQUEMENT avec un objet JSON valide.
+Interdit: titres, markdown, texte avant/après le JSON.
+Format exact (échappe les guillemets dans le texte):
+{{"description_fr": "texte long en français...", "description_en": "long text in English..."}}
 """.strip()
 
-    raw = _post_to_nim(prompt, max_tokens=cfg["max_tokens"], temperature=0.4)
-    descriptions = _extract_json(raw)
+    raw = _post_to_ollama(prompt, max_tokens=cfg["max_tokens"], temperature=0.2, json_mode=True)
+    descriptions = _extract_descriptions(raw)
     result = {
-        "description_fr": str(descriptions.get("description_fr", "")).strip() or "N/A",
-        "description_en": str(descriptions.get("description_en", "")).strip() or "N/A",
+        "description_fr": descriptions.get("description_fr") or "N/A",
+        "description_en": descriptions.get("description_en") or "N/A",
     }
     return _expand_descriptions_if_short(
         result, product, source_text, filename, description_length

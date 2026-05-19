@@ -16,9 +16,7 @@ import {
   Activity
 } from 'lucide-react'
 import './styles/index.css'
-import UploadFiles from './components/UploadFiles'
-import DocumentList from './components/DocumentList'
-import SpecificationDetail from './components/SpecificationDetail'
+import DocumentsPage from './components/DocumentsPage'
 import ProductList from './components/ProductList'
 import DocumentGenerator from './components/DocumentGenerator'
 
@@ -27,8 +25,6 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [userDropdownOpen, setUserDropdownOpen] = useState(false)
   const [apiKey, setApiKey] = useState(localStorage.getItem('apiKey') || '')
-  const [selectedDocumentId, setSelectedDocumentId] = useState(null)
-
   const navItems = [
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'documents', label: 'Documents' },
@@ -37,10 +33,6 @@ function App() {
     { id: 'analytics', label: 'Analytics' },
     { id: 'settings', label: 'Settings' }
   ]
-
-  const handleSelectDocument = (docId) => {
-    setSelectedDocumentId(docId)
-  }
 
   return (
     <div className="App">
@@ -118,13 +110,7 @@ function App() {
       <main className="main-content">
         <div className="content-section">
           {activeTab === 'dashboard' && <DashboardSection />}
-          {activeTab === 'documents' && (
-            <DocumentsSection
-              apiKey={apiKey}
-              selectedDocumentId={selectedDocumentId}
-              onSelectDocument={handleSelectDocument}
-            />
-          )}
+          {activeTab === 'documents' && <DocumentsSection apiKey={apiKey} />}
           {activeTab === 'products' && <ProductsSection apiKey={apiKey} />}
           {activeTab === 'generator' && <DocumentGeneratorSection />}
           {activeTab === 'analytics' && <AnalyticsSection />}
@@ -295,51 +281,18 @@ function DashboardSection() {
   )
 }
 
-// Documents Section - Now with real functionality
-function DocumentsSection({ apiKey, selectedDocumentId, onSelectDocument }) {
+// Documents Section
+function DocumentsSection({ apiKey }) {
   return (
     <div className="animate-fade-in">
       <div className="page-header">
         <h1 className="page-title">Documents</h1>
-        <p className="page-subtitle">Upload and manage your technical specification documents</p>
+        <p className="page-subtitle">
+          Déposez vos fiches techniques, extrayez les spécifications produits via Ollama
+        </p>
       </div>
 
-      <div className="grid grid-2" style={{ gap: '2rem' }}>
-        {/* Left Column - Upload and Document List */}
-        <div>
-          {/* Upload Zone - Using real component */}
-          <UploadFiles apiKey={apiKey} />
-
-          {/* Document List - Using real component */}
-          <DocumentList
-            apiKey={apiKey}
-            onSelectDocument={onSelectDocument}
-            selectedDocumentId={selectedDocumentId}
-          />
-        </div>
-
-        {/* Right Column - Specification Detail */}
-        <div>
-          {selectedDocumentId ? (
-            <SpecificationDetail
-              apiKey={apiKey}
-              documentId={selectedDocumentId}
-            />
-          ) : (
-            <div className="card card-no-shadow">
-              <div className="empty-state">
-                <div className="empty-icon">
-                  <FileText size={64} />
-                </div>
-                <p className="empty-title">No Document Selected</p>
-                <p className="empty-description">
-                  Select a document from the list to view its specifications and extracted data.
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      <DocumentsPage apiKey={apiKey} />
     </div>
   )
 }
@@ -419,13 +372,13 @@ function AnalyticsSection() {
 // Settings Section - Now with real API key management
 function SettingsSection({ apiKey, setApiKey }) {
   const [localApiKey, setLocalApiKey] = useState(apiKey)
-  const [apiEndpoint, setApiEndpoint] = useState(localStorage.getItem('apiEndpoint') || 'https://integrate.api.nvidia.com/v1')
+  const [ollamaModel, setOllamaModel] = useState(localStorage.getItem('ollamaModel') || 'llama3.2:latest')
   const [descriptionLength, setDescriptionLength] = useState(localStorage.getItem('descriptionLength') || 'medium')
   const [notificationEmail, setNotificationEmail] = useState(localStorage.getItem('notificationEmail') || '')
 
   const handleSave = () => {
     localStorage.setItem('apiKey', localApiKey)
-    localStorage.setItem('apiEndpoint', apiEndpoint)
+    localStorage.setItem('ollamaModel', ollamaModel)
     localStorage.setItem('descriptionLength', descriptionLength)
     localStorage.setItem('notificationEmail', notificationEmail)
     setApiKey(localApiKey)
@@ -434,7 +387,7 @@ function SettingsSection({ apiKey, setApiKey }) {
 
   const handleCancel = () => {
     setLocalApiKey(apiKey)
-    setApiEndpoint(localStorage.getItem('apiEndpoint') || 'https://integrate.api.nvidia.com/v1')
+    setOllamaModel(localStorage.getItem('ollamaModel') || 'llama3.2:latest')
     setDescriptionLength(localStorage.getItem('descriptionLength') || 'medium')
     setNotificationEmail(localStorage.getItem('notificationEmail') || '')
   }
@@ -452,7 +405,7 @@ function SettingsSection({ apiKey, setApiKey }) {
         </div>
 
         <div className="form-group">
-          <label className="form-label">NVIDIA NIM API Key</label>
+          <label className="form-label">Gomedia API Key</label>
           <input
             type="password"
             className="form-input"
@@ -463,13 +416,17 @@ function SettingsSection({ apiKey, setApiKey }) {
         </div>
 
         <div className="form-group">
-          <label className="form-label">API Endpoint</label>
+          <label className="form-label">Ollama Model (référence)</label>
           <input
             type="text"
             className="form-input"
-            value={apiEndpoint}
-            onChange={(e) => setApiEndpoint(e.target.value)}
+            placeholder="llama3.2:latest"
+            value={ollamaModel}
+            onChange={(e) => setOllamaModel(e.target.value)}
           />
+          <p style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--gray)' }}>
+            Le modèle actif est configuré côté serveur via OLLAMA_MODEL dans .env (défaut: http://localhost:11434).
+          </p>
         </div>
 
         <div className="card-header card-header-no-border" style={{ marginTop: '2rem' }}>

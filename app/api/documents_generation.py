@@ -26,7 +26,7 @@ from docx import Document
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.product import Product, ProductDescription, ProductFile
+from app.models.product import Product, ProductDescription, ProductFile, TechnicalSpec
 
 router = APIRouter()
 
@@ -35,20 +35,24 @@ logger = logging.getLogger(__name__)
 
 
 def is_valid_file(file_path: str) -> bool:
-    """Check if file exists (local path or R2 URL)."""
+    """Check if file exists locally or as remote URL."""
     if not file_path:
         return False
 
-    if file_path.startswith('http'):
+    if file_path.startswith("http://") or file_path.startswith("https://"):
         try:
             response = requests.head(file_path, timeout=5, allow_redirects=True)
             return response.status_code == 200
         except Exception as e:
             logger.warning(f"URL check failed for {file_path}: {e}")
             return False
-    else:
-        return os.path.exists(file_path)
 
+    normalized_path = os.path.normpath(file_path)
+
+    if not os.path.isabs(normalized_path):
+        normalized_path = os.path.join(os.getcwd(), normalized_path)
+
+    return os.path.exists(normalized_path)
 
 def extract_product_data_from_excel(excel_path: str) -> Dict[str, dict]:
     """
@@ -112,9 +116,8 @@ def extract_part_numbers_simple(excel_path: str) -> List[str]:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid Excel file: {str(e)}")
 
-
 def fetch_products_from_db(db: Session, parts: List[str]) -> List[dict]:
-    """Fetch product data for given part numbers."""
+    """Fetch product data and technical specs for given part numbers."""
     if not parts:
         return []
 
@@ -123,20 +126,34 @@ def fetch_products_from_db(db: Session, parts: List[str]) -> List[dict]:
     ).all()
 
     result = []
+
     for product in products:
         description = db.query(ProductDescription).filter(
             ProductDescription.product_id == product.id
         ).first()
 
+        specs = db.query(TechnicalSpec).filter(
+            TechnicalSpec.product_id == product.id
+        ).all()
+
+        technical_specs = []
+        for spec in specs:
+            technical_specs.append({
+                "attribut": spec.attribut,
+                "valeur": spec.valeur,
+                "unite": spec.unite
+            })
+
         result.append({
             "id": product.id,
             "ref_produit": product.ref_produit,
             "designation": product.designation,
-            "descriptif_fr": description.descriptif_fr if description else None
+            "marque": product.marque,
+            "descriptif_fr": description.descriptif_fr if description else None,
+            "technical_specs": technical_specs
         })
 
     return result
-
 
 def fetch_products_and_files_from_db(db: Session, parts: List[str]) -> List[dict]:
     """Fetch product data along with associated file paths."""
@@ -177,11 +194,14 @@ def generate_ae_specs_docx(project_name: str, products: List[dict], excel_data: 
     doc = Document()
     doc.add_heading("Spécifications A&E", 0)
 
+    i = 0
+
     for product in products:
         ref_produit = product.get("ref_produit", "")
         designation_db = product.get("designation") or ""
         descriptif = product.get("descriptif_fr") or "(aucun descriptif disponible)"
 
+        i+=1
         # Récupérer le N prix depuis Excel si disponible
         n_prix = ""
         if excel_data and ref_produit in excel_data:
@@ -189,26 +209,48 @@ def generate_ae_specs_docx(project_name: str, products: List[dict], excel_data: 
 
         # Titre : Designation (Reference) - N prix
         title_parts = []
+        title_parts.append(f"Prix N°{i}.")  # Numéroter les produits
         if designation_db:
             title_parts.append(designation_db)
         if ref_produit:
             title_parts.append(f"({ref_produit})")
-        if n_prix:
-            title_parts.append(f"- N° prix: {n_prix}")
+        """if n_prix:
+            title_parts.append(f"- N° prix: {n_prix}")"""
 
         title = " ".join(title_parts) if title_parts else "Produit"
         doc.add_heading(title, level=1)
 
         # Ajouter les détails
-        if ref_produit:
-            doc.add_paragraph(f"Référence: {ref_produit}")
-        if n_prix:
-            doc.add_paragraph(f"N° de prix: {n_prix}")
+        """if ref_produit:
+            doc.add_paragraph(f"Référence: {ref_produit}")"""
+        """if n_prix:
+            doc.add_paragraph(f"-N° de prix: {n_prix}")"""
 
-        doc.add_paragraph("\nDescription:")
+        doc.add_paragraph("\nCe prix remunere la fourniture et pose de:"+" " +designation_db)
+        
+        doc.add_paragraph(f"\nDescription:")
         doc.add_paragraph(descriptif)
+        """specs = product.get("technical_specs", [])"""
+
+        """if specs:
+            doc.add_heading("Spécifications techniques", level=2)
+
+            table = doc.add_table(rows=1, cols=2)
+            table.style = "Table Grid"
+
+            header_cells = table.rows[0].cells
+            header_cells[0].text = "Attribut"
+            header_cells[1].text = "Valeur"
+
+            for spec in specs:
+                row_cells = table.add_row().cells
+                row_cells[0].text = str(spec.get("attribut") or "")
+                row_cells[1].text = str(spec.get("valeur") or "")
+        else:
+            doc.add_paragraph("Aucune spécification technique disponible.")"""
 
         # Espace entre produits
+        doc.add_paragraph("Payé à l’unité")
         doc.add_paragraph("")
 
     buffer = BytesIO()
@@ -217,31 +259,46 @@ def generate_ae_specs_docx(project_name: str, products: List[dict], excel_data: 
     return buffer.getvalue()
 
 
-def generate_zip_from_files(project_name: str, file_urls: List[str], arcnames: List[str]) -> bytes:
-    """Generate a ZIP archive from R2 URLs (downloads files on the fly)."""
+def generate_zip_from_files(project_name: str, file_paths: List[str], arcnames: List[str]) -> bytes:
+    """Generate a ZIP archive from local files or remote URLs."""
     buffer = BytesIO()
 
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        for i, url in enumerate(file_urls):
-            if not url:
-                logger.warning(f"Empty URL at index {i}, skipping")
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for i, file_path in enumerate(file_paths):
+            if not file_path:
+                logger.warning(f"Empty file path at index {i}, skipping")
                 continue
 
             try:
-                logger.debug(f"Downloading: {url}")
-                response = requests.get(url, timeout=30)
-                response.raise_for_status()
+                if file_path.startswith("http://") or file_path.startswith("https://"):
+                    logger.debug(f"Downloading URL: {file_path}")
+                    response = requests.get(file_path, timeout=30)
+                    response.raise_for_status()
+                    zf.writestr(arcnames[i], response.content)
+                else:
+                    normalized_path = os.path.normpath(file_path)
 
-                zf.writestr(arcnames[i], response.content)
+                    if not os.path.isabs(normalized_path):
+                        base_dir = os.getcwd()
+                        normalized_path = os.path.join(base_dir, normalized_path)
+
+                    logger.debug(f"Adding local file: {normalized_path}")
+
+                    if not os.path.exists(normalized_path):
+                        logger.warning(f"Local file not found: {normalized_path}")
+                        continue
+
+                    zf.write(normalized_path, arcnames[i])
+
                 logger.debug(f"Added to ZIP: {arcnames[i]}")
+
             except requests.RequestException as e:
-                logger.warning(f"Failed to download {url}: {e}")
+                logger.warning(f"Failed to download {file_path}: {e}")
             except Exception as e:
-                logger.warning(f"Error processing {url}: {e}")
+                logger.warning(f"Error processing {file_path}: {e}")
 
     buffer.seek(0)
     return buffer.getvalue()
-
 
 def clean_filename(s: str) -> str:
     """Remove invalid characters for filenames."""

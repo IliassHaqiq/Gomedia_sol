@@ -102,7 +102,7 @@ export default function UploadFiles({ apiKey }) {
 
       setUploadResult((prev) => ({
         ...prev,
-        extraction: { type: 'info', message: '⏳ Extraction en cours (1–3 min en mode moyen)…' },
+        extraction: { type: 'info', message: '⏳ Extraction en cours (5–10 min en mode moyen avec Ollama local)…' },
       }))
 
       const extractRes = await axios.post(

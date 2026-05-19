@@ -22,7 +22,7 @@ export default function HealthCheck() {
     const services = [
       { name: 'api', url: 'http://localhost:8000/health', icon: '🌐', title: 'API' },
       { name: 'db', url: 'http://localhost:8000/health/db', icon: '🗄️', title: 'Base de Données' },
-      { name: 'ollama', url: 'http://localhost:8000/health/ollama', icon: '🤖', title: 'Service LLM (Gemini)' },
+      { name: 'ollama', url: 'http://localhost:8000/health/ollama', icon: '🤖', title: 'Service LLM (Ollama)' },
     ]
 
     for (const service of services) {
@@ -150,14 +150,15 @@ export default function HealthCheck() {
           </div>
           <div className={`health-status ${getIconClass(healthStatus.ollama.status)}`}>
             {healthStatus.ollama.status === 'checking' ? '⏳ Vérification...' :
-             healthStatus.ollama.status === 'healthy' ? '🤖 Gemini Opérationnel' :
-             '🤖 Gemini Hors ligne'}
+             healthStatus.ollama.status === 'healthy' ? '🤖 Ollama Opérationnel' :
+             '🤖 Ollama Hors ligne'}
           </div>
           <div className="health-details" style={{ marginTop: '1rem', fontSize: '0.9rem' }}>
             {healthStatus.ollama.data && (
               <>
                 <div><strong>Service:</strong> {healthStatus.ollama.data.service}</div>
-                <div><strong>Version:</strong> {healthStatus.ollama.data.version}</div>
+                <div><strong>Modèle:</strong> {healthStatus.ollama.data.model}</div>
+                <div><strong>URL:</strong> {healthStatus.ollama.data.base_url}</div>
               </>
             )}
             <div><strong>Message:</strong> {healthStatus.ollama.message}</div>

@@ -143,29 +143,121 @@ def save_uploaded_file(file: UploadFile) -> str:
     logger.info(f"File saved: {safe_filename} ({total_size} bytes)")
     return file_path
 
-
 def extract_reference_from_filename(filename: str) -> str:
     """
-    Extract product reference from filename.
-    Examples:
-        - 60-1493-21.pdf → 60-1493-21
-        - UM121.pdf → UM121
-        - TCS_DAT_71.98.2005_uniCOS_PRO-T_FR.pdf → 71.98.2005
-        - TCS_DAT_71.98.0502_ConfideaF-DV_en-US (2).pdf → 71.98.0502
+    Extract clean product reference from filename.
     """
-    # Remove extension
-    base_name = os.path.splitext(filename)[0]
 
-    # Handle TCS_DAT_ prefix pattern
-    if base_name.startswith("TCS_DAT_"):
-        # Extract the numeric part after TCS_DAT_
-        # Pattern: TCS_DAT_XX.XX.XXXX_rest
-        match = re.match(r"TCS_DAT_(\d+\.\d+\.\d+)", base_name)
-        if match:
-            return match.group(1)
+    base_name = os.path.splitext(os.path.basename(filename))[0]
 
-    # For other files, return the base name without extension
-    return base_name
+    # Remove copy suffix like " (2)"
+    base_name = re.sub(r"\s*\(\d+\)$", "", base_name)
+
+    # ---------------------------------------------------
+    # Pattern 1: TCS_DAT_71.69.5530_xxx
+    # -> 71.69.5530
+    # ---------------------------------------------------
+    match = re.search(
+        r"TCS_DAT_(\d{2}\.\d{2}\.\d{4})",
+        base_name,
+        re.IGNORECASE
+    )
+    if match:
+        return match.group(1)
+
+    # ---------------------------------------------------
+    # Pattern 2: 60-2069-01
+    # ---------------------------------------------------
+    match = re.search(
+        r"\b\d{2}-\d{4}-\d{2}\b",
+        base_name
+    )
+    if match:
+        return match.group(0)
+
+    # ---------------------------------------------------
+    # Pattern 3: 71.69.5530
+    # ---------------------------------------------------
+    match = re.search(
+        r"\b\d{2}\.\d{2}\.\d{4}\b",
+        base_name
+    )
+    if match:
+        return match.group(0)
+
+    # ---------------------------------------------------
+    # Pattern 4: Vox@net_g2_datasheet...
+    # -> Vox@net g2
+    # ---------------------------------------------------
+    match = re.search(
+        r"(Vox@net[_\-\s]*g\d+)",
+        base_name,
+        re.IGNORECASE
+    )
+    if match:
+        return match.group(1).replace("_", " ")
+
+    # ---------------------------------------------------
+    # Generic cleanup fallback
+    # ---------------------------------------------------
+    cleaned = re.sub(
+        r"[_\-]+(datasheet|ae|fr|en|vn[\d.]+).*",
+        "",
+        base_name,
+        flags=re.IGNORECASE
+    )
+
+    cleaned = cleaned.replace("_", " ").strip()
+
+    return cleaned
+
+def create_product_aliment_from_document(doc: Document, db: Session) -> Product:
+    """
+    Aliment mode:
+    - No text extraction
+    - No LLM
+    - No descriptions
+    - No technical specs
+    - No embeddings
+    - Only product + product_files link
+    """
+
+    ref_produit = extract_reference_from_filename(doc.filename)
+    file_hash = calculate_file_hash(doc.file_path)
+
+    product = db.query(Product).filter(
+        Product.ref_produit == ref_produit
+    ).first()
+
+    if not product:
+        product = Product(
+            ref_produit=ref_produit,
+            marque=None,
+            designation=None
+        )
+        db.add(product)
+        db.flush()
+
+    existing_file = db.query(ProductFile).filter(
+        ProductFile.product_id == product.id,
+        ProductFile.file_hash == file_hash
+    ).first()
+
+    if not existing_file:
+        product_file = ProductFile(
+            product_id=product.id,
+            file_name=doc.filename,
+            file_path=doc.file_path,
+            file_hash=file_hash
+        )
+        db.add(product_file)
+
+    doc.status = "alimented"
+
+    db.commit()
+    db.refresh(product)
+
+    return product
 
 
 def create_product_from_document(
@@ -175,7 +267,7 @@ def create_product_from_document(
     multi_product: bool = False,
 ) -> List[Product]:
     """
-    Extrait le texte du document, génère les données via NVIDIA NIM,
+    Extrait le texte du document, génère les données via Ollama,
     et crée un ou plusieurs produits avec leurs descriptions, specs et embeddings.
     Retourne une liste de produits créés/mis à jour.
     """
@@ -339,6 +431,99 @@ def create_product_from_document(
     return created_products
 
 
+@router.post("/aliment-all")
+def aliment_all_uploaded_documents(db: Session = Depends(get_db)):
+    """
+    Alimente tous les documents avec status='uploaded'.
+    Crée seulement:
+    - products
+    - product_files
+
+    Ne crée pas:
+    - descriptions
+    - technical_specs
+    - embeddings
+    """
+
+    docs = db.query(Document).filter(Document.status == "uploaded").all()
+
+    if not docs:
+        return {
+            "message": "Aucun document à alimenter",
+            "processed_count": 0,
+            "results": []
+        }
+
+    results = []
+
+    for doc in docs:
+        try:
+            product = create_product_aliment_from_document(doc, db)
+
+            results.append({
+                "document_id": doc.id,
+                "filename": doc.filename,
+                "status": "success",
+                "product": {
+                    "product_id": product.id,
+                    "ref_produit": product.ref_produit
+                }
+            })
+
+        except Exception as e:
+            db.rollback()
+            doc.status = "error"
+            db.commit()
+
+            results.append({
+                "document_id": doc.id,
+                "filename": doc.filename,
+                "status": "error",
+                "error": str(e)
+            })
+
+    return {
+        "message": "Alimentation en lot terminée",
+        "processed_count": len(results),
+        "results": results
+    }
+
+@router.post("/{doc_id}/alimenter")
+def aliment_document(doc_id: int, db: Session = Depends(get_db)):
+    """
+    Aliment database only:
+    Creates product from filename reference and links document file.
+    Does not extract description/specs/embeddings.
+    """
+
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document introuvable")
+
+    try:
+        product = create_product_aliment_from_document(doc, db)
+
+        return {
+            "message": "Document alimenté avec succès",
+            "document_id": doc.id,
+            "filename": doc.filename,
+            "status": doc.status,
+            "product": {
+                "id": product.id,
+                "ref_produit": product.ref_produit,
+                "marque": product.marque,
+                "designation": product.designation,
+            }
+        }
+
+    except Exception as e:
+        db.rollback()
+        doc.status = "error"
+        db.commit()
+        raise HTTPException(status_code=500, detail=str(e))
+    
+
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
@@ -490,7 +675,28 @@ def extract_document(doc_id: int, description_length: str = "medium", db: Sessio
     logger.info(f"📄 Document trouvé: {doc.filename} (id: {doc.id}, status: {doc.status})")
 
     if doc.status == "processing":
-        logger.warning("⚠️ Document id=%s déjà en 'processing' — nouvelle tentative autorisée", doc_id)
+        logger.warning("Document id=%s déjà en extraction — requête refusée", doc_id)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Extraction déjà en cours pour ce document. "
+                "Attendez la fin ou utilisez « Annuler » puis réessayez."
+            ),
+        )
+
+    other_processing = (
+        db.query(Document)
+        .filter(Document.status == "processing", Document.id != doc_id)
+        .first()
+    )
+    if other_processing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Une autre extraction est en cours ({other_processing.filename}). "
+                "Attendez qu'elle se termine avant d'en lancer une nouvelle."
+            ),
+        )
 
     doc.status = "processing"
     db.commit()
@@ -518,12 +724,12 @@ def extract_document(doc_id: int, description_length: str = "medium", db: Sessio
     except ValueError as e:
         doc.status = "error"
         db.commit()
-        logger.error(f"❌ Erreur extraction (ValueError): {str(e)}")
+        logger.error(f"Erreur extraction (ValueError): {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         doc.status = "error"
         db.commit()
-        logger.error(f"❌ Erreur specification inattendue: {str(e)}", exc_info=True)
+        logger.error(f"Erreur specification inattendue: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

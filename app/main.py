@@ -9,8 +9,10 @@ from app.models.product import Product, ProductDescription, ProductFile, Technic
 from app.db.base import Base
 from app.core.logging import setup_logging
 from app.services.deepseek import deepseek_service
+from app.services.llm import OLLAMA_BASE_URL, OLLAMA_MODEL
 import os
 import logging
+import requests
 
 # Configuration du logging
 logger = setup_logging()
@@ -61,7 +63,7 @@ def root():
     return {
         "message": "Gomedia IA Specs API is running",
         "version": "2.0.0",
-        "features": ["RAG Search", "DeepSeek V4 Pro", "pgvector"],
+        "features": ["RAG Search", "Ollama LLM", "DeepSeek V4 Pro", "pgvector"],
         "status": "healthy"
     }
 
@@ -85,6 +87,44 @@ def health_db(db: Session = Depends(get_db)):
 def health_deepseek():
     """Vérifie le service DeepSeek"""
     return deepseek_service.health_check()
+
+
+@app.get("/health/ollama")
+def health_ollama():
+    """Vérifie le service Ollama (LLM local)"""
+    try:
+        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+        response.raise_for_status()
+        models = response.json().get("models", [])
+        model_names = [m.get("name", "") for m in models]
+        model_available = any(
+            name == OLLAMA_MODEL or name.startswith(f"{OLLAMA_MODEL}:")
+            for name in model_names
+        )
+        if not model_available and model_names:
+            logger.warning(
+                "Modèle %s non trouvé dans Ollama. Disponibles: %s",
+                OLLAMA_MODEL,
+                ", ".join(model_names[:5]),
+            )
+        return {
+            "status": "healthy",
+            "service": "ollama",
+            "version": "local",
+            "base_url": OLLAMA_BASE_URL,
+            "model": OLLAMA_MODEL,
+            "model_available": model_available,
+            "models_count": len(model_names),
+        }
+    except requests.exceptions.ConnectionError:
+        logger.error("Health check Ollama FAILED: service not running")
+        raise HTTPException(
+            503,
+            f"Ollama inaccessible à {OLLAMA_BASE_URL}. Démarrez avec: ollama serve",
+        )
+    except Exception as e:
+        logger.error(f"Health check Ollama FAILED: {str(e)}")
+        raise HTTPException(503, f"Ollama health check failed: {str(e)}")
 
 @app.get("/health/pgvector")
 def health_pgvector(db: Session = Depends(get_db)):
